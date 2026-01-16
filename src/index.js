@@ -48,7 +48,12 @@ app.post('/auth/login', async (req, res) => {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
     if (error) return res.status(400).json({ error: error.message });
-    res.status(200).json({ message: "Login exitoso", session: data.session });
+    
+    res.status(200).json({ 
+        message: "Login exitoso", 
+        session: data.session,
+        user: data.user 
+    });
   } catch (err) {
     res.status(500).json({ error: "Error interno en el login" });
   }
