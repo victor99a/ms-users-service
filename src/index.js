@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const supabase = require('./supabase');
+const { encryptData, decryptData } = require('./src/utils/crypto');
 
 const app = express();
 app.use(express.json());
@@ -59,7 +60,7 @@ app.post('/auth/login', async (req, res) => {
   }
 });
 
-// RUTA 3: FICHA MÉDICA
+// --- RUTA 3: FICHA MÉDICA (GUARDAR CON SEGURIDAD) ---
 app.post('/medical/records', async (req, res) => {
   try {
     const { 
@@ -69,6 +70,11 @@ app.post('/medical/records', async (req, res) => {
 
     if (!user_id) return res.status(400).json({ error: "El ID de usuario es obligatorio" });
 
+    // 🔒 1. ENCRIPTAMOS DATOS SENSIBLES
+    const encryptedPhone = encryptData(emergency_contact_phone);
+    const encryptedDiseases = encryptData(chronic_diseases);
+    const encryptedAllergies = encryptData(allergies); // Opcional: encriptar alergias también
+
     const { data, error } = await supabase
       .from('medical_records') 
       .insert([
@@ -77,22 +83,19 @@ app.post('/medical/records', async (req, res) => {
           blood_type, 
           height: parseFloat(height) || 0, 
           initial_weight: parseFloat(initial_weight) || 0, 
-          allergies, 
-          chronic_diseases, 
+          allergies: encryptedAllergies, 
+          chronic_diseases: encryptedDiseases, // <--- Guardamos basura ilegible
           emergency_contact_name, 
-          emergency_contact_phone 
+          emergency_contact_phone: encryptedPhone // <--- Guardamos basura ilegible
         }
       ]);
 
-    if (error) {
-      console.error("Error de RLS o Constraint en Supabase:", error.message);
-      return res.status(400).json({ error: error.message });
-    }
+    if (error) return res.status(400).json({ error: error.message });
 
-    res.status(201).json({ message: "Ficha médica guardada exitosamente", data });
+    res.status(201).json({ message: "Ficha médica protegida y guardada.", data });
   } catch (err) {
-    console.error("Error en el microservicio:", err);
-    res.status(500).json({ error: "Error procesando la ficha médica" });
+    console.error(err);
+    res.status(500).json({ error: "Error procesando la ficha" });
   }
 });
 
