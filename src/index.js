@@ -10,6 +10,24 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
+const verifySession = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Token no proporcionado" });
+  }
+
+  const { data: { user }, error } = await supabase.auth.getUser(token);
+
+  if (error || !user) {
+    return res.status(401).json({ error: "Sesión inválida o expirada" });
+  }
+
+  req.user = user;
+  next();
+};
+
 app.post('/auth/signup', async (req, res) => {
   try {
     const { email, password, rut, first_names, last_names } = req.body;
@@ -19,9 +37,9 @@ app.post('/auth/signup', async (req, res) => {
       password,
       options: {
         data: {
-          rut: rut,
-          first_names: first_names,
-          last_names: last_names,
+          rut,
+          first_names,
+          last_names,
           role: 'patient',
           status: 'active' 
         }
@@ -31,12 +49,12 @@ app.post('/auth/signup', async (req, res) => {
     if (error) return res.status(400).json({ error: error.message });
     
     res.status(201).json({ 
-      message: "Registro exitoso en Auth.", 
+      message: "Registro exitoso", 
       user: data.user,
       session: data.session 
     });
   } catch (err) {
-    res.status(500).json({ error: "Error interno del servidor en el registro" });
+    res.status(500).json({ error: "Error interno en registro" });
   }
 });
 
@@ -48,23 +66,44 @@ app.post('/auth/login', async (req, res) => {
     if (error) return res.status(400).json({ error: error.message });
     res.status(200).json({ message: "Login exitoso", session: data.session });
   } catch (err) {
-    res.status(500).json({ error: "Error interno en el login" });
+    res.status(500).json({ error: "Error interno en login" });
   }
 });
 
-app.post('/medical/records', async (req, res) => {
+app.get('/patients', verifySession, async (req, res) => {
+  try {
+    const role = req.user.user_metadata.role || req.user.app_metadata.role;
+    
+    if (role !== 'specialist' && role !== 'admin') {
+        return res.status(403).json({ error: "Acceso denegado" });
+    }
+
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .in('role', ['patient', 'user']) 
+      .order('first_names', { ascending: true });
+
+    if (error) return res.status(400).json({ error: error.message });
+
+    res.status(200).json(data);
+  } catch (err) {
+    res.status(500).json({ error: "Error al listar pacientes" });
+  }
+});
+
+app.post('/medical/records', verifySession, async (req, res) => {
   try {
     const { 
       user_id, blood_type, height, initial_weight, 
       allergies, chronic_diseases, emergency_contact_name, emergency_contact_phone 
     } = req.body;
 
-    if (!user_id) return res.status(400).json({ error: "El ID de usuario es obligatorio" });
+    if (!user_id) return res.status(400).json({ error: "ID de usuario obligatorio" });
 
     const { data, error } = await supabase
       .from('medical_records') 
-      .insert([
-        { 
+      .insert([{ 
           user_id, 
           blood_type, 
           height: parseFloat(height) || 0, 
@@ -73,61 +112,45 @@ app.post('/medical/records', async (req, res) => {
           chronic_diseases, 
           emergency_contact_name, 
           emergency_contact_phone 
-        }
-      ]);
+        }]);
 
-    if (error) {
-      console.error("Error de RLS o Constraint en Supabase:", error.message);
-      return res.status(400).json({ error: error.message });
-    }
+    if (error) return res.status(400).json({ error: error.message });
 
-    res.status(201).json({ message: "Ficha médica guardada exitosamente", data });
+    res.status(201).json({ message: "Ficha creada", data });
   } catch (err) {
-    console.error("Error en el microservicio:", err);
-    res.status(500).json({ error: "Error procesando la ficha médica" });
+    res.status(500).json({ error: "Error procesando ficha" });
   }
 });
 
-app.get('/medical/records/:user_id', async (req, res) => {
+app.get('/medical/records/:user_id', verifySession, async (req, res) => {
   try {
     const { user_id } = req.params;
 
-    if (!user_id) return res.status(400).json({ error: "Falta el ID del usuario" });
     const { data, error } = await supabase
       .from('medical_records')
       .select('*')
       .eq('user_id', user_id)
-      .single();
+      .maybeSingle();
 
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return res.status(404).json({ message: "Aún no has llenado tu ficha médica." });
-      }
-      return res.status(400).json({ error: error.message });
+    if (error) return res.status(400).json({ error: error.message });
+
+    if (!data) {
+      return res.status(404).json({ message: "Ficha no encontrada" });
     }
 
     res.status(200).json(data);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Error al obtener la ficha" });
+    res.status(500).json({ error: "Error al obtener ficha" });
   }
 });
 
-app.put('/medical/records/:user_id', async (req, res) => {
+app.put('/medical/records/:user_id', verifySession, async (req, res) => {
   try {
     const { user_id } = req.params;
-    
     const { 
-      height, 
-      current_weight, 
-      allergies, 
-      chronic_diseases, 
-      emergency_contact_name, 
-      emergency_contact_phone,
-      blood_type 
+      height, current_weight, allergies, chronic_diseases, 
+      emergency_contact_name, emergency_contact_phone, blood_type 
     } = req.body;
-
-    if (!user_id) return res.status(400).json({ error: "Falta ID de usuario" });
 
     const { data, error } = await supabase
       .from('medical_records')
@@ -145,36 +168,28 @@ app.put('/medical/records/:user_id', async (req, res) => {
 
     if (error) return res.status(400).json({ error: error.message });
 
-    res.status(200).json({ message: "Perfil actualizado correctamente", data });
+    res.status(200).json({ message: "Actualizado correctamente", data });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ error: "Error al actualizar" });
   }
 });
 
-app.get('/users/:id', async (req, res) => {
+app.get('/users/:id', verifySession, async (req, res) => {
   try {
     const { id } = req.params;
-
-    if (!id) return res.status(400).json({ error: "Falta el ID del usuario" });
-
     const { data, error } = await supabase
       .from('profiles')
       .select('*')
       .eq('id', id)
       .single();
 
-    if (error) {
-      console.error("Error buscando perfil:", error);
-      return res.status(404).json({ error: "Usuario no encontrado en profiles" });
-    }
+    if (error) return res.status(404).json({ error: "Perfil no encontrado" });
 
     res.status(200).json(data);
   } catch (err) {
-    console.error("Error interno:", err);
-    res.status(500).json({ error: "Error al obtener perfil del usuario" });
+    res.status(500).json({ error: "Error interno" });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Microservicio de Usuarios corriendo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Microservicio Users corriendo en ${PORT}`));
